@@ -839,7 +839,7 @@ class SigmasSchedulePreview(SaveImage):
         
         if torch.norm(sigma_step_size_tensor - sigma_step_size_sde_tensor) > 1e-2:
             tensors.append(sigma_step_size_sde_tensor)
-            labels.append("$Δ \hat{t}$")
+            labels.append(r"$Δ \hat{t}$")
             colors.append("gold")
             
         if sigma_hat_vals:
@@ -881,5 +881,4 @@ class SigmasSchedulePreview(SaveImage):
         images_tensor = torch.cat([tensor_image], 0)
 
         return self.save_images(images_tensor, "SigmasSchedulePreview")
-    
     
