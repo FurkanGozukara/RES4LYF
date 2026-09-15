@@ -1,6 +1,7 @@
 # Code adapted from https://github.com/pythongosssss/ComfyUI-Custom-Scripts
 
 import asyncio
+import copy
 import os
 import json
 import shutil
@@ -135,8 +136,7 @@ def save_config_value(key, value):
     d[keys[-1]] = value
 
     config_path = get_ext_dir(CONFIG_FILE_NAME)
-    with open(config_path, "w") as f:
-        json.dump(config, f, indent=4)
+    _write_json_file_atomic(config_path, config)
 
 
 def get_config_value(key, default=None, throw=False):
@@ -208,6 +208,22 @@ def merge_default_config(config, default_config):
             config[key] = merge_default_config(config.get(key, {}), value)
     return config
 
+def _read_json_file(path):
+    with open(path, "r", encoding="utf-8") as f:
+        return json.loads(f.read())
+
+
+def _write_json_file_atomic(path, data):
+    """Write JSON through a temporary file and os.replace, so a crash or power loss mid-write
+    can never leave a truncated or zero-filled config behind (that used to break the import)."""
+    tmp_path = f"{path}.{os.getpid()}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, path)
+
+
 def get_extension_config(reload=False):
     global config
     if not reload and config is not None:
@@ -215,23 +231,40 @@ def get_extension_config(reload=False):
 
     config_path = get_ext_dir(CONFIG_FILE_NAME)
     default_config_path = get_ext_dir(DEFAULT_CONFIG_FILE_NAME)
-    
+
+    default_config = {}
     if os.path.exists(default_config_path):
-        with open(default_config_path, "r") as f:
-            default_config = json.loads(f.read())
-    else:
+        try:
+            default_config = _read_json_file(default_config_path)
+        except (OSError, ValueError) as e:
+            print(f"(RES4LYF warning) Could not read {DEFAULT_CONFIG_FILE_NAME} ({e}); using built-in defaults")
+    if not isinstance(default_config, dict):
         default_config = {}
 
-    if not os.path.exists(config_path):
-        config = default_config
-        with open(config_path, "w") as f:
-            json.dump(config, f, indent=4)
-    else:
-        with open(config_path, "r") as f:
-            config = json.loads(f.read())
-        config = merge_default_config(config, default_config)
-        with open(config_path, "w") as f:
-            json.dump(config, f, indent=4)
+    # A damaged user config (empty, zero-filled after a crash, invalid JSON, wrong type) must never
+    # stop the whole node pack from importing: fall back to the defaults and rewrite the file.
+    loaded = None
+    problem = None
+    if os.path.exists(config_path):
+        try:
+            loaded = _read_json_file(config_path)
+        except (OSError, ValueError) as e:  # ValueError covers JSONDecodeError and UnicodeDecodeError
+            problem = str(e)
+        else:
+            if not isinstance(loaded, dict):
+                problem = f"expected a JSON object, found {type(loaded).__name__}"
+                loaded = None
+
+    original = copy.deepcopy(loaded) if loaded is not None else None
+    config = merge_default_config(loaded if loaded is not None else {}, copy.deepcopy(default_config))
+
+    if problem is not None:
+        logger.warning(f"{CONFIG_FILE_NAME} could not be read ({problem}); it was reset to the default settings")
+    if original != config:
+        try:
+            _write_json_file_atomic(config_path, config)
+        except OSError as e:
+            logger.warning(f"Could not write {CONFIG_FILE_NAME} ({e}); continuing with in-memory settings")
 
     return config
 
